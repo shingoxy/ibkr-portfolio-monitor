@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 - IBKR{% endblock %}
+{% block content %}
+<div id="stale-warning" class="alert alert-warning py-2 mb-2" style="display:none;">
+    <small>数据可能过期，最后一次成功更新: <span id="stale-time">--</span></small>
+</div>
+<div class="row mb-3"><div class="col-12"><h4>账户概要</h4></div></div>
+<div class="row mb-4" id="account-cards">
+    <div class="col-md-3 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">净清算价值</h6>
+        <h4 id="val-netliquidation" class="card-title">--</h4>
+    </div></div></div>
+    <div class="col-md-3 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">总现金</h6>
+        <h4 id="val-totalcash" class="card-title">--</h4>
+    </div></div></div>
+    <div class="col-md-3 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">可用资金</h6>
+        <h4 id="val-available" class="card-title">--</h4>
+    </div></div></div>
+    <div class="col-md-3 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">购买力</h6>
+        <h4 id="val-buyingpower" class="card-title">--</h4>
+    </div></div></div>
+</div>
+<div class="row mb-4">
+    <div class="col-md-4 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">持仓总市值</h6>
+        <h4 id="val-gross" class="card-title">--</h4>
+    </div></div></div>
+    <div class="col-md-4 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">当日盈亏</h6>
+        <h4 id="val-daily" class="card-title">--</h4>
+    </div></div></div>
+    <div class="col-md-4 mb-2"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-1 text-muted">未实现盈亏</h6>
+        <h4 id="val-unrealized" class="card-title">--</h4>
+    </div></div></div>
+</div>
+<div class="row mb-4">
+    <div class="col-md-6"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-2 text-muted">保证金要求</h6>
+        <table class="table table-sm mb-0">
+            <tr><td>初始保证金</td><td id="val-initmargin" class="text-end">--</td></tr>
+            <tr><td>维持保证金</td><td id="val-maintmargin" class="text-end">--</td></tr>
+            <tr><td>超额流动性</td><td id="val-excess" class="text-end">--</td></tr>
+            <tr><td>安全垫</td><td id="val-cushion" class="text-end">--</td></tr>
+            <tr><td>购买力</td><td id="val-bp2" class="text-end">--</td></tr>
+        </table>
+    </div></div></div>
+    <div class="col-md-6"><div class="card"><div class="card-body">
+        <h6 class="card-subtitle mb-2 text-muted">持仓分布</h6>
+        <div id="chart-positions-pie" style="height: 250px;"></div>
+    </div></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadDashboard() {
+    const acct = await fetchAPI('/api/account');
+    if (!acct) return;
+
+    // 数据过期提示
+    if (acct.data_freshness && acct.data_freshness !== 'fresh') {
+        document.getElementById('stale-warning').style.display = '';
+        document.getElementById('stale-time').textContent = acct.last_update ? new Date(acct.last_update).toLocaleString() : '未知';
+    } else {
+        document.getElementById('stale-warning').style.display = 'none';
+    }
+
+    if (acct.items) {
+        setText('val-netliquidation', formatMoney(acct.items.NetLiquidation));
+        setText('val-totalcash', formatMoney(acct.items.TotalCashValue));
+        setText('val-available', formatMoney(acct.items.AvailableFunds));
+        setText('val-buyingpower', formatMoney(acct.items.BuyingPower));
+        setText('val-bp2', formatMoney(acct.items.BuyingPower));
+        setText('val-gross', formatMoney(acct.items.GrossPositionValue));
+        setText('val-initmargin', formatMoney(acct.items.InitMarginReq));
+        setText('val-maintmargin', formatMoney(acct.items.MaintMarginReq));
+        setText('val-excess', formatMoney(acct.items.ExcessLiquidity));
+        setText('val-cushion', acct.items.Cushion ? (parseFloat(acct.items.Cushion) * 100).toFixed(1) + '%' : '--');
+        if (acct.pnl) setText('val-daily', formatPnl(acct.pnl.daily || 0));
+    }
+
+    const summary = await fetchAPI('/api/positions/summary');
+    if (summary) {
+        setText('val-unrealized', formatPnl(summary.total_unrealized_pnl));
+        if (summary.positions && summary.positions.length > 0) {
+            const bySymbol = {};
+            summary.positions.forEach(p => {
+                bySymbol[p.symbol] = (bySymbol[p.symbol] || 0) + Math.abs(p.market_value || 0);
+            });
+            Plotly.newPlot('chart-positions-pie', [{
+                type: 'pie', labels: Object.keys(bySymbol), values: Object.values(bySymbol),
+                hole: 0.4, textinfo: 'label+percent',
+            }], { margin: { t: 10, b: 10, l: 10, r: 10 }, showlegend: false }, { responsive: true });
+        }
+    }
+}
+loadDashboard();
+setInterval(loadDashboard, 5000);
+</script>
+{% endblock %}

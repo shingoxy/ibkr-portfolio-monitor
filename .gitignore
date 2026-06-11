@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 环境
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 数据
+data/*.db
+data/*.sqlite
+
+# 日志
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}订单 - IBKR{% endblock %}
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <ul class="nav nav-tabs" role="tablist">
+            <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-open">当前挂单</a></li>
+            <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-completed">已完成订单</a></li>
+            <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-executions">成交记录</a></li>
+        </ul>
+    </div>
+</div>
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="tab-open">
+        <div class="card"><div class="card-body p-0"><div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead><tr>
+                    <th>标的</th><th>方向</th><th>类型</th><th class="text-end">数量</th>
+                    <th class="text-end">限价</th><th class="text-end">已成交</th><th class="text-end">剩余</th><th>状态</th>
+                </tr></thead>
+                <tbody id="tbody-orders"></tbody>
+            </table>
+        </div></div></div>
+    </div>
+    <div class="tab-pane fade" id="tab-completed">
+        <div class="card"><div class="card-body p-0"><div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead><tr>
+                    <th>标的</th><th>方向</th><th>类型</th><th class="text-end">数量</th>
+                    <th class="text-end">成交价</th><th>状态</th><th>完成时间</th>
+                </tr></thead>
+                <tbody id="tbody-completed"></tbody>
+            </table>
+        </div></div></div>
+    </div>
+    <div class="tab-pane fade" id="tab-executions">
+        <div class="card"><div class="card-body p-0"><div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead><tr>
+                    <th>标的</th><th>方向</th><th class="text-end">数量</th>
+                    <th class="text-end">成交价</th><th>交易所</th><th>时间</th>
+                </tr></thead>
+                <tbody id="tbody-executions"></tbody>
+            </table>
+        </div></div></div>
+    </div>
+</div>
+<p class="mt-2"><small class="text-muted">注：本页面仅供查看，不提供任何交易操作按钮。</small></p>
+{% endblock %}
+{% block scripts %}
+<script>
+const badgeCls = { Submitted: 'bg-primary', PreSubmitted: 'bg-info', Filled: 'bg-success', Cancelled: 'bg-secondary', Inactive: 'bg-warning' };
+
+async function loadOrders() {
+    const orders = await fetchAPI('/api/orders');
+    if (!orders) return;
+    document.getElementById('tbody-orders').innerHTML = orders.length === 0
+        ? '<tr><td colspan="8" class="text-center text-muted py-4">暂无挂单</td></tr>'
+        : orders.map(o => `<tr>
+            <td><strong>${o.symbol}</strong></td>
+            <td class="${o.action === 'BUY' ? 'text-success' : 'text-danger'}">${o.action}</td>
+            <td>${o.order_type}</td>
+            <td class="text-end">${o.total_qty.toFixed(0)}</td>
+            <td class="text-end">${o.lmt_price > 0 ? o.lmt_price.toFixed(2) : '--'}</td>
+            <td class="text-end">${o.filled.toFixed(0)}</td>
+            <td class="text-end">${o.remaining.toFixed(0)}</td>
+            <td><span class="badge ${badgeCls[o.status] || 'bg-secondary'}">${o.status}</span></td>
+        </tr>`).join('');
+
+    const completed = await fetchAPI('/api/orders/completed');
+    if (completed) {
+        document.getElementById('tbody-completed').innerHTML = completed.length === 0
+            ? '<tr><td colspan="7" class="text-center text-muted py-4">暂无已完成订单</td></tr>'
+            : completed.map(o => `<tr>
+                <td><strong>${o.symbol}</strong></td>
+                <td class="${o.action === 'BUY' ? 'text-success' : 'text-danger'}">${o.action}</td>
+                <td>${o.order_type}</td>
+                <td class="text-end">${o.total_qty.toFixed(0)}</td>
+                <td class="text-end">${o.avg_fill_price > 0 ? o.avg_fill_price.toFixed(2) : '--'}</td>
+                <td><span class="badge bg-secondary">${o.status}</span></td>
+                <td>${o.completed_time || '--'}</td>
+            </tr>`).join('');
+    }
+
+    const execs = await fetchAPI('/api/executions');
+    if (execs) {
+        document.getElementById('tbody-executions').innerHTML = execs.length === 0
+            ? '<tr><td colspan="6" class="text-center text-muted py-4">暂无成交记录</td></tr>'
+            : execs.map(e => `<tr>
+                <td><strong>${e.symbol}</strong></td>
+                <td class="${e.side === 'BUY' ? 'text-success' : 'text-danger'}">${e.side}</td>
+                <td class="text-end">${e.shares}</td>
+                <td class="text-end">${e.price ? e.price.toFixed(2) : '--'}</td>
+                <td>${e.exchange || '--'}</td>
+                <td>${e.time || '--'}</td>
+            </tr>`).join('');
+    }
+}
+loadOrders();
+setInterval(loadOrders, 10000);
+</script>
+{% endblock %}

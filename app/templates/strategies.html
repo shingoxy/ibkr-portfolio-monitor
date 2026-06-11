@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}期权策略 - IBKR{% endblock %}
+{% block content %}
+<div class="row mb-3"><div class="col-12"><h4>期权组合分析</h4></div></div>
+<div class="row mb-4"><div class="col-12"><div class="card"><div class="card-body p-0"><div class="table-responsive">
+    <table class="table table-hover table-sm mb-0">
+        <thead><tr>
+            <th>标的</th><th>策略</th><th class="text-end">腿数</th>
+            <th class="text-end">最大盈利</th><th class="text-end">最大亏损</th>
+            <th class="text-end">盈亏平衡</th><th class="text-end">Delta</th><th class="text-end">Theta</th>
+            <th class="text-end">到期天数</th><th>操作</th>
+        </tr></thead>
+        <tbody id="tbody-combos"></tbody>
+    </table>
+</div></div></div></div>
+
+<!-- 风险提示 -->
+<div class="row mb-4" id="risk-section" style="display:none;">
+    <div class="col-12"><div class="card border-warning">
+        <div class="card-header bg-warning text-dark d-flex justify-content-between">
+            <span>风险提示</span>
+            <button class="btn btn-sm btn-outline-dark" onclick="document.getElementById('risk-section').style.display='none'">关闭</button>
+        </div>
+        <div class="card-body"><ul id="risk-warnings" class="mb-0"></ul></div>
+    </div></div>
+</div>
+
+<!-- 收益曲线 -->
+<div class="row mb-4" id="payoff-section" style="display:none;">
+    <div class="col-12"><div class="card">
+        <div class="card-header d-flex justify-content-between">
+            <span id="payoff-title">到期收益曲线</span>
+            <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('payoff-section').style.display='none'">关闭</button>
+        </div>
+        <div class="card-body">
+            <div id="chart-payoff" style="height: 400px;"></div>
+            <div class="mt-2">
+                <small class="text-muted">
+                    注：到期收益图为到期日静态分析，不含手续费。美式期权存在提前行权风险，实际收益可能不同。
+                </small>
+            </div>
+        </div>
+    </div></div>
+</div>
+
+<!-- 情景分析 -->
+<div class="row mb-4" id="scenario-section" style="display:none;">
+    <div class="col-12"><div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span id="scenario-title">情景分析</span>
+            <div>
+                <select id="iv-selector" class="form-select form-select-sm d-inline-block w-auto" onchange="updateScenarioView()">
+                </select>
+                <button class="btn btn-sm btn-outline-secondary ms-2" onclick="document.getElementById('scenario-section').style.display='none'">关闭</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="chart-scenario" style="height: 400px;"></div>
+            <div class="mt-2">
+                <small class="text-muted">
+                    注：基于 Black-Scholes 模型估算，仅供参考。美式期权实际价格可能不同，股息和利率会影响结果。
+                </small>
+            </div>
+        </div>
+    </div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let combosData = [];
+let scenarioData = null;
+
+async function loadCombos() {
+    combosData = await fetchAPI('/api/strategies');
+    if (!combosData) return;
+    document.getElementById('tbody-combos').innerHTML = combosData.map((c, i) => {
+        c.id = i + 1;
+        const riskBadge = c.risk_warnings && c.risk_warnings.length > 0
+            ? `<span class="badge bg-warning text-dark ms-1">${c.risk_warnings.length}</span>` : '';
+        return `<tr>
+            <td><strong>${c.underlying}</strong></td>
+            <td>${c.strategy_name_cn} <small class="text-muted">${c.strategy_name}</small>${riskBadge}</td>
+            <td class="text-end">${c.legs.length}</td>
+            <td class="text-end text-success">${c.max_profit.toFixed(2)}</td>
+            <td class="text-end text-danger">${c.max_loss.toFixed(2)}</td>
+            <td class="text-end">${c.breakevens.map(b => b.toFixed(2)).join(', ')}</td>
+            <td class="text-end">${c.total_delta.toFixed(3)}</td>
+            <td class="text-end">${c.total_theta.toFixed(2)}</td>
+            <td class="text-end">${c.days_to_expiry}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-primary" onclick="showPayoff(${c.id})">收益</button>
+                <button class="btn btn-sm btn-outline-info" onclick="showScenario(${c.id})">情景</button>
+                <button class="btn btn-sm btn-outline-warning" onclick="showRisk(${c.id})">风险</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+async function showPayoff(id) {
+    const data = await fetchAPI('/api/strategies/' + id + '/payoff');
+    if (!data || data.error) return;
+    document.getElementById('payoff-section').style.display = '';
+    document.getElementById('payoff-title').textContent = data.underlying + ' - 到期收益曲线';
+    const maxPnl = Math.max(...data.pnl);
+    const minPnl = Math.min(...data.pnl);
+    Plotly.newPlot('chart-payoff', [
+        { x: data.prices, y: data.pnl, type: 'scatter', mode: 'lines', name: 'P&L', line: { color: '#0d6efd', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(13,110,253,0.1)' },
+        { x: [data.prices[0], data.prices[data.prices.length-1]], y: [0,0], type: 'scatter', mode: 'lines', name: '零线', line: { color: '#6c757d', dash: 'dash', width: 1 } },
+        { x: [data.current_price, data.current_price], y: [minPnl, maxPnl], type: 'scatter', mode: 'lines', name: '当前价格', line: { color: '#dc3545', dash: 'dot', width: 1 } },
+        ...data.breakevens.map(be => ({
+            x: [be, be], y: [minPnl, maxPnl], type: 'scatter', mode: 'lines',
+            name: '盈亏平衡 ' + be.toFixed(2), line: { color: '#198754', dash: 'dashdot', width: 1 }
+        }))
+    ], {
+        margin: { t: 20, b: 50, l: 80, r: 20 },
+        xaxis: { title: '标的价格' },
+        yaxis: { title: '盈亏 ($)' },
+        showlegend: true, legend: { x: 0, y: 1 },
+    }, { responsive: true });
+    document.getElementById('payoff-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function showScenario(id) {
+    scenarioData = await fetchAPI('/api/strategies/' + id + '/scenario');
+    if (!scenarioData || scenarioData.error) return;
+    document.getElementById('scenario-section').style.display = '';
+    document.getElementById('scenario-title').textContent = scenarioData.underlying + ' - 情景分析';
+
+    // 填充 IV 选择器
+    const sel = document.getElementById('iv-selector');
+    sel.innerHTML = (scenarioData.iv_changes || [0]).map(iv => {
+        const label = iv === 0 ? 'IV 不变' : `IV ${iv > 0 ? '+' : ''}${iv}%`;
+        return `<option value="iv_${iv >= 0 ? '+' : ''}${iv}%">${label}</option>`;
+    }).join('');
+
+    updateScenarioView();
+    document.getElementById('scenario-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+function updateScenarioView() {
+    if (!scenarioData) return;
+    const sel = document.getElementById('iv-selector');
+    const key = sel.value;
+    const matrix = (scenarioData.scenarios || {})[key] || scenarioData.matrix;
+
+    Plotly.newPlot('chart-scenario', [{
+        z: matrix, x: scenarioData.price_steps, y: scenarioData.date_steps,
+        type: 'heatmap',
+        colorscale: [[0, '#dc3545'], [0.5, '#ffffff'], [1, '#198754']],
+        colorbar: { title: 'P&L ($)' },
+    }], {
+        margin: { t: 20, b: 50, l: 60, r: 20 },
+        xaxis: { title: '标的价格' },
+        yaxis: { title: '时间' },
+    }, { responsive: true });
+}
+
+function showRisk(id) {
+    const combo = combosData.find(c => c.id === id);
+    if (!combo) return;
+    document.getElementById('risk-section').style.display = '';
+    document.getElementById('risk-warnings').innerHTML = combo.risk_warnings && combo.risk_warnings.length > 0
+        ? combo.risk_warnings.map(w => `<li class="mb-1">${w}</li>`).join('')
+        : '<li>暂无特别风险提示</li>';
+    document.getElementById('risk-section').scrollIntoView({ behavior: 'smooth' });
+}
+
+loadCombos();
+setInterval(loadCombos, 5000);
+</script>
+{% endblock %}
