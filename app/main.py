@@ -100,12 +100,13 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(ROOT / "app" / "static")), name="static")
     app.state.templates = Jinja2Templates(directory=str(ROOT / "app" / "templates"))
 
-    from app.api import routes_dashboard, routes_positions, routes_strategies, routes_orders, routes_export
+    from app.api import routes_dashboard, routes_positions, routes_strategies, routes_orders, routes_export, routes_trading
     app.include_router(routes_dashboard.router)
     app.include_router(routes_positions.router)
     app.include_router(routes_strategies.router)
     app.include_router(routes_orders.router)
     app.include_router(routes_export.router)
+    app.include_router(routes_trading.router)
 
     return app
 
