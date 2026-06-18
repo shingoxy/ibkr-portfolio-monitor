@@ -35,6 +35,12 @@ def test_account_risk_state_rejects_negative_equity():
         AccountRiskState(net_liquidation=-1, available_funds=100)
 
 
+def test_account_risk_state_defaults_to_zero_cash_fields():
+    risk_state = AccountRiskState()
+    assert risk_state.net_liquidation == 0.0
+    assert risk_state.available_funds == 0.0
+
+
 def test_trading_config_defaults_to_signal_only_disabled_execution():
     settings = Settings()
     assert settings.trading_enabled is False

@@ -49,8 +49,8 @@ class SwingSignal(BaseModel):
 
 
 class AccountRiskState(BaseModel):
-    net_liquidation: float
-    available_funds: float
+    net_liquidation: float = 0.0
+    available_funds: float = 0.0
     gross_position_value: float = 0.0
     open_positions: int = 0
 
