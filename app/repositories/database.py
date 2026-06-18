@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, Integer, Float, String, DateTime, Text,
-    create_engine, Index,
+    create_engine, Index, JSON,
 )
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -100,6 +100,38 @@ class MarketDataSnapshotRow(Base):
     theta = Column(Float, default=0.0)
     und_price = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TradingSignalRecord(Base):
+    """Trading signal audit record."""
+    __tablename__ = "trading_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    symbol = Column(String(32), index=True, nullable=False)
+    action = Column(String(16), nullable=False)
+    close = Column(Float, default=0.0)
+    sma_fast = Column(Float, default=0.0)
+    sma_slow = Column(Float, default=0.0)
+    atr = Column(Float, default=0.0)
+    stop_price = Column(Float, default=0.0)
+    reasons_json = Column(JSON, default=list)
+
+
+class TradingOrderPlanRecord(Base):
+    """Simulated order plan audit record."""
+    __tablename__ = "trading_order_plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(Integer, default=0, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    symbol = Column(String(32), index=True, nullable=False)
+    action = Column(String(16), nullable=False)
+    quantity = Column(Float, default=0.0)
+    limit_price = Column(Float, default=0.0)
+    order_type = Column(String(16), default="LMT")
+    status = Column(String(16), default="SIMULATED")
+    reasons_json = Column(JSON, default=list)
 
 
 class ComboIdentificationRow(Base):
