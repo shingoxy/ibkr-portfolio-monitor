@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # 行情类型 (1=实时, 2=冻结, 3=延时)
     market_data_type: int = 1
 
+    # Trading signal system, Phase 1 only creates simulated order plans.
+    trading_enabled: bool = False
+    trading_mode: str = "signal_only"  # signal_only, paper
+    trading_watchlist: str = "SPY,QQQ,VTI,IWM,DIA"
+    trading_max_positions: int = 4
+    trading_max_total_exposure_pct: float = 0.70
+    trading_max_symbol_exposure_pct: float = 0.25
+    trading_risk_per_trade_pct: float = 0.005
+    trading_min_cash_reserve_pct: float = 0.20
+
     # 重连配置
     reconnect_max_retries: int = 20
     reconnect_base_delay: float = 1.0
@@ -65,6 +75,14 @@ class Settings(BaseSettings):
         if not v:
             print("[安全错误] read_only=false 不允许！本程序仅支持只读模式。")
             sys.exit(1)
+        return v
+
+    @field_validator("trading_mode")
+    @classmethod
+    def validate_trading_mode(cls, v: str) -> str:
+        allowed = {"signal_only", "paper"}
+        if v not in allowed:
+            raise ValueError(f"trading_mode must be one of {sorted(allowed)}")
         return v
 
 
