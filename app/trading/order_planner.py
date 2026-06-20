@@ -8,6 +8,16 @@ class OrderPlanner:
         self.limit_buffer_pct = limit_buffer_pct
 
     def build(self, intent: SizedIntent) -> OrderPlan:
+        if intent.blocked:
+            return OrderPlan(
+                symbol=intent.symbol,
+                action=intent.action,
+                quantity=0,
+                limit_price=0.0,
+                status=OrderPlanStatus.BLOCKED,
+                reasons=[*intent.reasons, "intent_blocked"],
+            )
+
         if intent.quantity <= 0:
             return OrderPlan(
                 symbol=intent.symbol,

@@ -39,6 +39,7 @@ def test_trading_config_defaults_to_signal_only_disabled_execution():
     settings = Settings()
     assert settings.trading_enabled is False
     assert settings.trading_mode == "signal_only"
-    assert settings.trading_max_total_exposure_pct == 0.70
-    assert settings.trading_max_symbol_exposure_pct == 0.25
-    assert settings.trading_risk_per_trade_pct == 0.005
+    assert settings.trading_max_total_exposure_pct == 0.60
+    assert settings.trading_max_symbol_exposure_pct == 0.20
+    assert settings.trading_risk_per_trade_pct == 0.003
+    assert settings.trading_min_cash_reserve_pct == 0.25

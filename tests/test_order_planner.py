@@ -37,3 +37,19 @@ def test_blocks_zero_quantity():
     assert plan.quantity == 0
     assert plan.status.value == "BLOCKED"
     assert "zero_quantity" in plan.reasons
+
+
+def test_blocks_when_intent_is_blocked_even_with_quantity():
+    intent = SizedIntent(
+        symbol="SPY",
+        action=SignalAction.BUY,
+        quantity=10,
+        limit_reference_price=100.0,
+        blocked=True,
+        reasons=["cash_reserve_limit"],
+    )
+    plan = OrderPlanner().build(intent)
+    assert plan.quantity == 0
+    assert plan.status.value == "BLOCKED"
+    assert "cash_reserve_limit" in plan.reasons
+    assert "intent_blocked" in plan.reasons
