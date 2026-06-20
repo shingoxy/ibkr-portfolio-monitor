@@ -83,6 +83,8 @@ class IBKRClient(EWrapper, EClient):
         self.execution_end = threading.Event()
         self.completed_order_queue: queue.Queue = queue.Queue()
         self.completed_order_end = threading.Event()
+        self.historical_data_queue: queue.Queue = queue.Queue()
+        self.historical_data_end_queue: queue.Queue = queue.Queue()
 
         # PnL 数据（流式推送）
         self._pnl_lock = threading.Lock()
@@ -370,6 +372,26 @@ class IBKRClient(EWrapper, EClient):
     def tickSnapshotEnd(self, tickerId: TickerId) -> None:
         logger.debug("行情快照完成 tickerId=%d", tickerId)
 
+    # ── 历史行情回调 ──────────────────────────────────────────────────
+
+    def historicalData(self, reqId: int, bar: Any) -> None:
+        self.historical_data_queue.put({
+            "req_id": reqId,
+            "date": getattr(bar, "date", ""),
+            "open": getattr(bar, "open", 0.0) or 0.0,
+            "high": getattr(bar, "high", 0.0) or 0.0,
+            "low": getattr(bar, "low", 0.0) or 0.0,
+            "close": getattr(bar, "close", 0.0) or 0.0,
+            "volume": getattr(bar, "volume", 0) or 0,
+        })
+
+    def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:
+        self.historical_data_end_queue.put({
+            "req_id": reqId,
+            "start": start,
+            "end": end,
+        })
+
     # ── PnL 回调 ──────────────────────────────────────────────────────
 
     def pnl(self, reqId: int, dailyPnL: float,
@@ -465,6 +487,24 @@ class IBKRClient(EWrapper, EClient):
         while not self.market_data_queue.empty():
             try:
                 items.append(self.market_data_queue.get_nowait())
+            except queue.Empty:
+                break
+        return items
+
+    def drain_historical_data(self) -> list[dict]:
+        items = []
+        while not self.historical_data_queue.empty():
+            try:
+                items.append(self.historical_data_queue.get_nowait())
+            except queue.Empty:
+                break
+        return items
+
+    def drain_historical_data_end(self) -> list[dict]:
+        items = []
+        while not self.historical_data_end_queue.empty():
+            try:
+                items.append(self.historical_data_end_queue.get_nowait())
             except queue.Empty:
                 break
         return items
