@@ -93,7 +93,9 @@ class IBKRClient(EWrapper, EClient):
 
         # 行情数据
         self.market_data_queue: queue.Queue = queue.Queue()
+        self.market_data_notice_queue: queue.Queue = queue.Queue()
         self._ticker_contracts: dict[int, dict] = {}
+        self._ticker_live_fields: dict[int, set[str]] = {}
         self._ticker_counter = 1000
         self._ticker_lock = threading.Lock()
 
@@ -163,6 +165,15 @@ class IBKRClient(EWrapper, EClient):
                 "errorString": msg, "type": "connection",
             })
             return
+
+        # 行情数据权限/延时提示（保留原有 error_queue 行为，同时记录到独立提示队列）
+        if errorCode in (354, 10089, 10167, 10168, 10189):
+            self.market_data_notice_queue.put({
+                "reqId": reqId,
+                "errorCode": errorCode,
+                "errorString": errorString,
+                "type": "market_data_notice",
+            })
 
         # 行情数据类型提示（非错误）
         if errorCode in (354, 10168):
@@ -315,19 +326,26 @@ class IBKRClient(EWrapper, EClient):
 
     def tickPrice(self, tickerId: TickerId, field: int, price: float,
                   attrib: Any) -> None:
-        with self._ticker_lock:
-            info = self._ticker_contracts.get(tickerId, {})
-        if not info:
-            return
-        # 过滤无效价格（-1 或 None 表示数据不可用）
         if price is None or price < 0:
             return
-        field_map = {1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close", 14: "open"}
-        fname = field_map.get(field)
-        if fname and price > 0:
-            info[fname] = price
-            with self._ticker_lock:
-                self._ticker_contracts[tickerId] = info
+        live_map = {1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close", 14: "open"}
+        delayed_map = {66: "bid", 67: "ask", 68: "last", 72: "high", 73: "low", 75: "close", 76: "open"}
+        with self._ticker_lock:
+            info = self._ticker_contracts.get(tickerId)
+            if not info:
+                return
+            if field in live_map and price > 0:
+                fname = live_map[field]
+                info[fname] = price
+                info["is_delayed"] = False
+                self._ticker_live_fields.setdefault(tickerId, set()).add(fname)
+            elif field in delayed_map and price > 0:
+                fname = delayed_map[field]
+                live_fields = self._ticker_live_fields.get(tickerId, set())
+                if fname not in live_fields:
+                    info[fname] = price
+                    if not live_fields:
+                        info["is_delayed"] = True
 
     def tickSize(self, tickerId: TickerId, field: int, size: int) -> None:
         with self._ticker_lock:
@@ -418,7 +436,8 @@ class IBKRClient(EWrapper, EClient):
         with self._ticker_lock:
             self._ticker_counter += 1
             tid = self._ticker_counter
-            self._ticker_contracts[tid] = contract_info
+            self._ticker_contracts[tid] = dict(contract_info)
+            self._ticker_live_fields[tid] = set()
             return tid
 
     def get_ticker_info(self, ticker_id: int) -> dict:
@@ -428,6 +447,7 @@ class IBKRClient(EWrapper, EClient):
     def clear_ticker(self, ticker_id: int) -> None:
         with self._ticker_lock:
             self._ticker_contracts.pop(ticker_id, None)
+            self._ticker_live_fields.pop(ticker_id, None)
 
     def get_pnl_data(self) -> dict:
         with self._pnl_lock:
@@ -487,6 +507,15 @@ class IBKRClient(EWrapper, EClient):
         while not self.market_data_queue.empty():
             try:
                 items.append(self.market_data_queue.get_nowait())
+            except queue.Empty:
+                break
+        return items
+
+    def drain_market_data_notices(self) -> list[dict]:
+        items = []
+        while not self.market_data_notice_queue.empty():
+            try:
+                items.append(self.market_data_notice_queue.get_nowait())
             except queue.Empty:
                 break
         return items
