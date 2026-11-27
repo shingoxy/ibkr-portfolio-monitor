@@ -69,6 +69,81 @@ async def test_ibkr_provider_requests_daily_bars_and_returns_sorted_bars():
     assert request_ids.get_by_category("historical") == []
 
 
+@pytest.mark.asyncio
+async def test_ibkr_provider_uses_year_duration_and_adjusted_prices_for_long_history():
+    client = _FakeHistoricalClient([], [{"req_id": 1000, "start": "", "end": ""}])
+    provider = IBKRHistoricalBarProvider(
+        client,
+        RequestIdManager(),
+        timeout_seconds=0.05,
+        poll_interval=0,
+        what_to_show="ADJUSTED_LAST",
+    )
+
+    await provider.get_daily_bars("NVDA", lookback_days=1095)
+
+    assert client.requests[0]["durationStr"] == "3 Y"
+    assert client.requests[0]["whatToShow"] == "ADJUSTED_LAST"
+
+
+@pytest.mark.asyncio
+async def test_ibkr_provider_preserves_interleaved_bars_for_next_request():
+    client = _FakeHistoricalClient(
+        [
+            {
+                "req_id": 1001,
+                "symbol": "QQQ",
+                "date": "20260102",
+                "open": 201.0,
+                "high": 202.0,
+                "low": 200.0,
+                "close": 201.5,
+                "volume": 2000,
+            },
+            {
+                "req_id": 1000,
+                "symbol": "SPY",
+                "date": "20260101",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000,
+            },
+        ],
+        [
+            {"req_id": 1001, "start": "20260102", "end": "20260102"},
+            {"req_id": 1000, "start": "20260101", "end": "20260101"},
+        ],
+    )
+    provider = IBKRHistoricalBarProvider(
+        client,
+        RequestIdManager(),
+        timeout_seconds=0.05,
+        poll_interval=0,
+    )
+
+    spy_bars = await provider.get_daily_bars("SPY", lookback_days=3)
+    qqq_bars = await provider.get_daily_bars("QQQ", lookback_days=3)
+
+    assert [bar.date.isoformat() for bar in spy_bars] == ["2026-01-01"]
+    assert [bar.date.isoformat() for bar in qqq_bars] == ["2026-01-02"]
+
+
+@pytest.mark.asyncio
+async def test_ibkr_provider_raises_timeout_when_request_never_completes():
+    client = _FakeHistoricalClient([], [])
+    provider = IBKRHistoricalBarProvider(
+        client,
+        RequestIdManager(),
+        timeout_seconds=0.01,
+        poll_interval=0,
+    )
+
+    with pytest.raises(TimeoutError, match="historical data timeout"):
+        await provider.get_daily_bars("SPY", lookback_days=3)
+
+
 def test_ibkr_client_historical_callbacks_are_drained():
     client = IBKRClient()
     bar = SimpleNamespace(

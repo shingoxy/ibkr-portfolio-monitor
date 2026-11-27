@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.trading.historical_provider import HistoricalBarProvider
-from app.trading.models import AccountRiskState, OrderPlan, OrderPlanStatus, SignalAction, SizedIntent
+from app.trading.models import AccountRiskState, OrderPlan, OrderPlanStatus, SignalAction, SizedIntent, SwingSignal
 from app.trading.order_planner import OrderPlanner
 from app.trading.risk_gate import RiskGate
 from app.trading.swing_strategy import SwingTrendStrategy
@@ -14,10 +14,11 @@ class TradingService:
         strategy: SwingTrendStrategy | None = None,
         risk_gate: RiskGate | None = None,
         order_planner: OrderPlanner | None = None,
+        settings=None,
     ) -> None:
         self._provider = provider
         self._strategy = strategy or SwingTrendStrategy()
-        self._risk_gate = risk_gate or RiskGate()
+        self._risk_gate = risk_gate or (RiskGate.from_settings(settings) if settings is not None else RiskGate())
         self._order_planner = order_planner or OrderPlanner()
 
     async def evaluate_symbol(
@@ -27,7 +28,21 @@ class TradingService:
         current_position_qty: int,
         highest_close_since_entry: float = 0.0,
     ) -> dict:
-        bars = await self._provider.get_daily_bars(symbol, lookback_days=220)
+        try:
+            bars = await self._provider.get_daily_bars(symbol, lookback_days=220)
+        except TimeoutError as exc:
+            reasons = ["historical_data_unavailable", str(exc)]
+            signal = SwingSignal(symbol=symbol, action=SignalAction.BLOCK, reasons=reasons)
+            plan = OrderPlan(
+                symbol=symbol,
+                action=SignalAction.BLOCK,
+                quantity=0,
+                limit_price=0.0,
+                status=OrderPlanStatus.BLOCKED,
+                reasons=reasons,
+            )
+            return {"signal": signal, "order_plan": plan}
+
         signal = self._strategy.evaluate(
             symbol=symbol,
             bars=bars,

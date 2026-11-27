@@ -1,5 +1,17 @@
+from app.config import Settings
 from app.trading.models import AccountRiskState, SignalAction, SwingSignal
 from app.trading.risk_gate import RiskGate
+
+
+def test_default_limits_match_trading_config_defaults():
+    settings = Settings()
+    gate = RiskGate()
+
+    assert gate.risk_per_trade_pct == settings.trading_risk_per_trade_pct
+    assert gate.max_total_exposure_pct == settings.trading_max_total_exposure_pct
+    assert gate.max_symbol_exposure_pct == settings.trading_max_symbol_exposure_pct
+    assert gate.min_cash_reserve_pct == settings.trading_min_cash_reserve_pct
+    assert gate.max_positions == settings.trading_max_positions
 
 
 def test_blocks_non_buy_signal():

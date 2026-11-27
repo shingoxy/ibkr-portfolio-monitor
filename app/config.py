@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Trading signal system, Phase 1 only creates simulated order plans.
     trading_enabled: bool = False
     trading_mode: str = "signal_only"  # signal_only, paper
-    trading_watchlist: str = "SPY,QQQ,VTI,IWM,DIA"
+    trading_watchlist: str = "SPY,QQQ,VTI,IWM,DIA,NVDA,TSM,TSLA,AAPL,MSFT"
     trading_max_positions: int = 4
     trading_max_total_exposure_pct: float = 0.60
     trading_max_symbol_exposure_pct: float = 0.20

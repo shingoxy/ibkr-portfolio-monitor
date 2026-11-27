@@ -8,10 +8,10 @@ from app.trading.models import AccountRiskState, SignalAction, SizedIntent, Swin
 class RiskGate:
     def __init__(
         self,
-        risk_per_trade_pct: float = 0.005,
-        max_total_exposure_pct: float = 0.70,
-        max_symbol_exposure_pct: float = 0.25,
-        min_cash_reserve_pct: float = 0.20,
+        risk_per_trade_pct: float = 0.003,
+        max_total_exposure_pct: float = 0.60,
+        max_symbol_exposure_pct: float = 0.20,
+        min_cash_reserve_pct: float = 0.25,
         max_positions: int = 4,
     ) -> None:
         self.risk_per_trade_pct = risk_per_trade_pct
@@ -19,6 +19,16 @@ class RiskGate:
         self.max_symbol_exposure_pct = max_symbol_exposure_pct
         self.min_cash_reserve_pct = min_cash_reserve_pct
         self.max_positions = max_positions
+
+    @classmethod
+    def from_settings(cls, settings) -> "RiskGate":
+        return cls(
+            risk_per_trade_pct=settings.trading_risk_per_trade_pct,
+            max_total_exposure_pct=settings.trading_max_total_exposure_pct,
+            max_symbol_exposure_pct=settings.trading_max_symbol_exposure_pct,
+            min_cash_reserve_pct=settings.trading_min_cash_reserve_pct,
+            max_positions=settings.trading_max_positions,
+        )
 
     def size(self, signal: SwingSignal, account: AccountRiskState) -> SizedIntent:
         if signal.action != SignalAction.BUY:

@@ -21,6 +21,10 @@ venv/
 # 数据
 data/*.db
 data/*.sqlite
+data/history/
+data/history_trades/
+data/events/
+data/backtests/
 
 # 日志
 *.log
