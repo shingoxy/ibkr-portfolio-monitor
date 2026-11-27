@@ -1,28 +1,636 @@
 {% extends "base.html" %}
-{% block title %}Trading Signals{% endblock %}
+{% block title %}指数核心再平衡看板 - IBKR{% endblock %}
 {% block content %}
-<div class="container-fluid">
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="h3">Trading Signals</h1>
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+  <div>
+    <h4 class="mb-0">指数核心调仓顾问（严格只读）</h4>
+    <small class="text-muted">对比 SPY 70% / QQQ 30%（5% 偏离再平衡）与 200 日双缓冲趋势防守切换 BIL</small>
+  </div>
+  <div>
+    <span class="badge bg-success me-1">READ-ONLY</span>
     <span class="badge bg-secondary" id="trading-mode">signal_only</span>
   </div>
-  <div class="alert alert-warning">
-    Phase 1 only generates simulated order plans. Real order execution is disabled.
-  </div>
-  <div class="card">
-    <div class="card-body">
-      <h2 class="h5">Configuration</h2>
-      <pre id="trading-config" class="mb-0"></pre>
+</div>
+
+<div class="alert alert-warning py-2 mb-3">
+  <strong>只读风控声明：</strong>本看板仅用于监控偏离、趋势状态与计算手工参考限价单，<strong>不会自动发送或撤销任何 TWS 委托</strong>。下单前请在 TWS 确认实时买卖盘与账户可用资金。
+</div>
+
+<div id="advisor-warnings" class="mb-3" style="display:none;"></div>
+
+<!-- 交互控制栏 -->
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-lg-4 col-md-12">
+        <label class="form-label small text-muted mb-1">当前查看策略</label>
+        <div class="btn-group w-100" role="group">
+          <button type="button" class="btn btn-primary" id="btn-plan-a" onclick="selectPlan('drift_rebalance')">
+            方案 A：5% 偏离再平衡
+          </button>
+          <button type="button" class="btn btn-outline-primary" id="btn-plan-b" onclick="selectPlan('trend_200sma_bil')">
+            方案 B：200日均线 ±2% 切 BIL
+          </button>
+        </div>
+      </div>
+
+      <div class="col-lg-3 col-md-4">
+        <label for="input-extra-dca" class="form-label small text-muted mb-1">本次新增定投 (USD)</label>
+        <div class="input-group input-group-sm">
+          <input type="number" class="form-control" id="input-extra-dca" min="0" step="50" value="0">
+          <button class="btn btn-outline-secondary" type="button" onclick="setContribution(0)">$0</button>
+          <button class="btn btn-outline-secondary" type="button" onclick="setContribution(500)">$500</button>
+          <button class="btn btn-outline-secondary" type="button" onclick="setContribution(1000)">$1000</button>
+        </div>
+      </div>
+
+      <div class="col-lg-3 col-md-4">
+        <label for="input-override-cash" class="form-label small text-muted mb-1">离线模拟资金 (USD，留空用实盘)</label>
+        <div class="input-group input-group-sm">
+          <input type="number" class="form-control" id="input-override-cash" min="0" step="100" placeholder="留空读取TWS">
+          <button class="btn btn-outline-secondary" type="button" onclick="setOverrideCash(5650)">$5.65k</button>
+          <button class="btn btn-outline-secondary" type="button" onclick="setOverrideCash(11000)">$11k</button>
+          <button class="btn btn-outline-secondary" type="button" onclick="setOverrideCash(null)">实盘</button>
+        </div>
+      </div>
+
+      <div class="col-lg-2 col-md-4">
+        <label for="input-drift-pct" class="form-label small text-muted mb-1">偏离阈值 (%)</label>
+        <div class="input-group input-group-sm">
+          <input type="number" class="form-control" id="input-drift-pct" min="1" max="30" step="0.5" value="5">
+          <button class="btn btn-dark" type="button" onclick="loadIndexCore()">重新计算</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
+
+<!-- 账户与核心摘要 KPI -->
+<div class="row g-3 mb-3">
+  <div class="col-md-3">
+    <div class="card h-100"><div class="card-body">
+      <div class="card-subtitle text-muted mb-1">净清算价值 / 账户</div>
+      <h4 class="card-title mb-1" id="kpi-netliq">--</h4>
+      <small class="text-muted" id="kpi-account">未连接</small>
+    </div></div>
+  </div>
+  <div class="col-md-3">
+    <div class="card h-100"><div class="card-body">
+      <div class="card-subtitle text-muted mb-1">用于计算的可用现金</div>
+      <h4 class="card-title mb-1" id="kpi-cash">--</h4>
+      <small class="text-muted" id="kpi-cash-source">--</small>
+    </div></div>
+  </div>
+  <div class="col-md-3">
+    <div class="card h-100"><div class="card-body">
+      <div class="card-subtitle text-muted mb-1">核心 ETF 市值（计划总资产）</div>
+      <h4 class="card-title mb-1" id="kpi-core-mv">--</h4>
+      <small class="text-muted" id="kpi-plan-equity">总资产: --</small>
+    </div></div>
+  </div>
+  <div class="col-md-3">
+    <div class="card h-100"><div class="card-body">
+      <div class="card-subtitle text-muted mb-1">非核心持仓 / 期权提醒</div>
+      <h4 class="card-title mb-1" id="kpi-other-count">0 项</h4>
+      <small class="text-muted" id="kpi-other-mv">市值 $0</small>
+    </div></div>
+  </div>
+</div>
+
+<!-- 双方案对比状态卡片 -->
+<div class="row g-3 mb-3">
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>方案 A：SPY 70% / QQQ 30%（阈值再平衡）</span>
+        <span class="badge bg-secondary" id="plan-a-badge">--</span>
+      </div>
+      <div class="card-body">
+        <div class="d-flex justify-content-between mb-2">
+          <span class="text-muted">当前最大权重偏离</span>
+          <strong id="plan-a-drift">--</strong>
+        </div>
+        <div class="progress mb-2" style="height: 8px;">
+          <div class="progress-bar" id="plan-a-drift-bar" style="width: 0%;"></div>
+        </div>
+        <p class="mb-0 small text-secondary" id="plan-a-summary">加载中...</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>方案 B：200 日均线 ±2% 双缓冲状态灯（防守切换 BIL）</span>
+        <span class="badge bg-secondary" id="plan-b-badge">--</span>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm mb-2">
+            <thead>
+              <tr>
+                <th>标的</th>
+                <th class="text-end">最新收盘</th>
+                <th class="text-end">200-SMA</th>
+                <th class="text-end">-2% / +2% 缓冲带</th>
+                <th class="text-end">距均线</th>
+                <th class="text-center">状态</th>
+                <th>最近切换日</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-regimes"></tbody>
+          </table>
+        </div>
+        <p class="mb-0 small text-secondary" id="plan-b-summary">加载中...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 核心权重表与手工下单清单 -->
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span id="alloc-table-title">当前持仓 vs 目标配比</span>
+        <span class="small text-muted" id="alloc-cash-after">调仓后预计现金: --</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover mb-0">
+            <thead>
+              <tr>
+                <th>标的</th>
+                <th class="text-end">现有股数</th>
+                <th class="text-end">参考价</th>
+                <th class="text-end">当前市值</th>
+                <th class="text-end">当前权重</th>
+                <th class="text-end">目标权重</th>
+                <th class="text-end">偏离</th>
+                <th class="text-end">调仓后</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-weights"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span id="orders-table-title">手工下单建议清单（仅作参考）</span>
+        <span class="badge bg-info text-dark" id="orders-count-badge">0 笔</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm table-hover mb-0">
+            <thead>
+              <tr>
+                <th>方向</th>
+                <th>标的</th>
+                <th class="text-end">股数</th>
+                <th class="text-end">参考价</th>
+                <th class="text-end">建议限价 (±0.2%)</th>
+                <th class="text-end">预计金额</th>
+                <th>原因</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-orders"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 非核心持仓明细（有则展示） -->
+<div class="card mb-3" id="other-positions-card" style="display:none;">
+  <div class="card-header">非核心 / 期权持仓明细（不参与指数权重再平衡）</div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>标的</th>
+            <th>类型</th>
+            <th>币种 / 市场</th>
+            <th>到期日 / 行权价</th>
+            <th class="text-end">持仓数量</th>
+            <th class="text-end">参考价</th>
+            <th class="text-end">市值</th>
+            <th class="text-end">未实现盈亏</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-other-positions"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 底部两列：零股要约活跃机会 + 10年回测基准 & 配置详情 -->
+<div class="row g-3 mb-4">
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>近 90 天零股要约活跃机会</span>
+        <small class="text-muted" id="oddlot-asof">--</small>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>标的</th>
+                <th>要约类型 / 价格区间</th>
+                <th class="text-end">截止日</th>
+                <th class="text-end">状态</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-oddlot"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>10 年回测基准对照参考</span>
+        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-config">
+          原始配置 JSON
+        </button>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>策略方案</th>
+                <th class="text-end">总收益</th>
+                <th class="text-end">年化 / XIRR</th>
+                <th class="text-end">最大回撤</th>
+                <th class="text-end">Sharpe</th>
+                <th class="text-end">委托数</th>
+              </tr>
+            </thead>
+            <tbody id="tbody-benchmarks"></tbody>
+          </table>
+        </div>
+        <div class="collapse border-top p-3 bg-light" id="collapse-config">
+          <div class="small text-muted mb-1"><code>/api/trading/config</code>（兼容旧版配置输出）</div>
+          <pre id="trading-config" class="mb-0 small"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
 <script>
+let selectedPlanId = 'drift_rebalance';
+let latestReport = null;
+
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeUrl(raw) {
+  const s = String(raw || '').trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  return '#';
+}
+
+function fmtUsd(v, digits = 2) {
+  if (v === null || v === undefined || isNaN(Number(v))) return '--';
+  return Number(v).toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function fmtCurrency(v, currency = 'USD', digits = 2) {
+  if (v === null || v === undefined || isNaN(Number(v))) return '--';
+  const cur = String(currency || 'USD').toUpperCase();
+  if (cur === 'USD') return fmtUsd(v, digits);
+  const formatted = Number(v).toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${cur} ${formatted}`;
+}
+
+function statusBadgeMeta(status) {
+  const map = {
+    HOLD: { cls: 'bg-success', label: '持有不动' },
+    DCA_BUY_ONLY: { cls: 'bg-info text-dark', label: '定投补低配' },
+    REBALANCE_TRIGGERED: { cls: 'bg-warning text-dark', label: '触发再平衡' },
+    REGIME_SWITCH_REQUIRED: { cls: 'bg-danger', label: '触发趋势切仓' },
+    INITIAL_ALLOCATION: { cls: 'bg-primary', label: '建议初始建仓' },
+    NO_CAPITAL: { cls: 'bg-secondary', label: '无可用资金' },
+    MISSING_PRICE: { cls: 'bg-dark', label: '缺少参考价' },
+  };
+  return map[status] || { cls: 'bg-secondary', label: status || '--' };
+}
+
+function priceSourceLabel(src) {
+  const map = {
+    tws_portfolio: 'TWS估值',
+    tws_quote: 'TWS报价',
+    history_close: '收盘日线',
+    avg_cost: '成本价',
+    unavailable: '缺失',
+  };
+  return map[src] || src || '--';
+}
+
+function cashSourceLabel(cap) {
+  if (!cap) return '--';
+  if (cap.is_simulated_cash) return '离线模拟资金';
+  const map = {
+    settled_cash: 'TWS 已交收现金',
+    total_cash: 'TWS 总现金',
+    available_funds: 'TWS 可用资金',
+    none: '未读取到实盘现金',
+  };
+  return map[cap.cash_source] || cap.cash_source;
+}
+
+function setContribution(val) {
+  document.getElementById('input-extra-dca').value = val;
+  loadIndexCore();
+}
+
+function setOverrideCash(val) {
+  document.getElementById('input-override-cash').value = val === null ? '' : val;
+  loadIndexCore();
+}
+
+function selectPlan(planId) {
+  selectedPlanId = planId;
+  const btnA = document.getElementById('btn-plan-a');
+  const btnB = document.getElementById('btn-plan-b');
+  if (planId === 'drift_rebalance') {
+    btnA.className = 'btn btn-primary';
+    btnB.className = 'btn btn-outline-primary';
+  } else {
+    btnA.className = 'btn btn-outline-primary';
+    btnB.className = 'btn btn-primary';
+  }
+  if (latestReport) renderSelectedPlan(latestReport);
+}
+
+function renderRegimes(regimes) {
+  const tbody = document.getElementById('tbody-regimes');
+  const rows = ['SPY', 'QQQ'].map(sym => {
+    const r = regimes?.[sym];
+    if (!r || !r.available) {
+      return `<tr><td><strong>${esc(sym)}</strong></td><td colspan="6" class="text-muted text-center">历史日线不足</td></tr>`;
+    }
+    const badge = r.risk_on
+      ? '<span class="badge bg-success">进攻 (RISK_ON)</span>'
+      : '<span class="badge bg-warning text-dark">防守 (DEFENSIVE)</span>';
+    const distCls = r.distance_to_sma_pct >= 0 ? 'text-success' : 'text-danger';
+    const distSign = r.distance_to_sma_pct >= 0 ? '+' : '';
+    const bufNote = r.in_buffer_zone ? ' <span class="badge bg-light text-dark border">缓冲带内</span>' : '';
+    return `<tr>
+      <td><strong>${esc(r.symbol)}</strong>${bufNote}</td>
+      <td class="text-end">${fmtUsd(r.last_close)}</td>
+      <td class="text-end">${fmtUsd(r.sma)}</td>
+      <td class="text-end small text-muted">${fmtUsd(r.lower_band)} ~ ${fmtUsd(r.upper_band)}</td>
+      <td class="text-end ${distCls}">${distSign}${Number(r.distance_to_sma_pct).toFixed(2)}%</td>
+      <td class="text-center">${badge}</td>
+      <td class="small text-muted">${esc(r.last_switch_date || r.as_of_date || '--')}</td>
+    </tr>`;
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+function renderSelectedPlan(data) {
+  const plan = data.plans?.[selectedPlanId];
+  if (!plan) return;
+
+  const isPlanA = selectedPlanId === 'drift_rebalance';
+  document.getElementById('alloc-table-title').textContent =
+    (isPlanA ? '方案 A ' : '方案 B ') + '当前持仓 vs 目标配比';
+  document.getElementById('orders-table-title').textContent =
+    (isPlanA ? '方案 A ' : '方案 B ') + '手工下单建议清单（仅作参考）';
+  document.getElementById('alloc-cash-after').textContent =
+    `调仓后预计现金: ${fmtUsd(plan.estimated_cash_after)}`;
+
+  const weightRows = (plan.weight_rows || []).map(row => {
+    const driftCls = Math.abs(row.drift_pct) >= plan.drift_threshold_pct ? 'text-danger fw-bold' : '';
+    const sign = row.drift_pct > 0 ? '+' : '';
+    return `<tr>
+      <td><strong>${esc(row.symbol)}</strong></td>
+      <td class="text-end">${Number(row.shares).toFixed(row.shares % 1 === 0 ? 0 : 2)}</td>
+      <td class="text-end">${row.price > 0 ? fmtUsd(row.price) : '--'} <small class="text-muted">${esc(priceSourceLabel(row.price_source))}</small></td>
+      <td class="text-end">${fmtUsd(row.market_value)}</td>
+      <td class="text-end">${Number(row.current_weight_pct).toFixed(1)}%</td>
+      <td class="text-end">${Number(row.target_weight_pct).toFixed(1)}%</td>
+      <td class="text-end ${driftCls}">${sign}${Number(row.drift_pct).toFixed(1)}%</td>
+      <td class="text-end">${Number(row.post_trade_shares).toFixed(row.post_trade_shares % 1 === 0 ? 0 : 2)} 股 (${Number(row.post_trade_weight_pct).toFixed(1)}%)</td>
+    </tr>`;
+  });
+  document.getElementById('tbody-weights').innerHTML = weightRows.join('');
+
+  const orders = plan.suggested_orders || [];
+  const badge = document.getElementById('orders-count-badge');
+  badge.textContent = `${orders.length} 笔`;
+  badge.className = orders.length > 0 ? 'badge bg-primary' : 'badge bg-success';
+
+  if (orders.length === 0) {
+    document.getElementById('tbody-orders').innerHTML =
+      `<tr><td colspan="7" class="text-center text-success py-3">${esc(plan.summary_text)}</td></tr>`;
+  } else {
+    document.getElementById('tbody-orders').innerHTML = orders.map(o => {
+      const actBadge = o.action === 'BUY'
+        ? '<span class="badge bg-success">BUY</span>'
+        : '<span class="badge bg-danger">SELL</span>';
+      return `<tr>
+        <td>${actBadge}</td>
+        <td><strong>${esc(o.symbol)}</strong></td>
+        <td class="text-end">${Number(o.quantity).toFixed(o.quantity % 1 === 0 ? 0 : 4)}</td>
+        <td class="text-end">${fmtUsd(o.reference_price)}</td>
+        <td class="text-end fw-semibold">${fmtUsd(o.suggested_limit_price)}</td>
+        <td class="text-end">${fmtUsd(o.estimated_notional)}</td>
+        <td class="small text-muted">${esc(o.reason)}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+function renderReport(data) {
+  latestReport = data;
+
+  const warnBox = document.getElementById('advisor-warnings');
+  const warnings = data.warnings || [];
+  if (warnings.length > 0) {
+    warnBox.style.display = '';
+    warnBox.innerHTML = warnings.map(w =>
+      `<div class="alert alert-info py-1 px-3 mb-1 small">${esc(w)}</div>`
+    ).join('');
+  } else {
+    warnBox.style.display = 'none';
+    warnBox.innerHTML = '';
+  }
+
+  const acct = data.account || {};
+  const cap = data.capital || {};
+  const conn = data.connection || {};
+  document.getElementById('kpi-netliq').textContent = acct.net_liquidation != null ? fmtUsd(acct.net_liquidation) : '--';
+  document.getElementById('kpi-account').textContent = conn.connected
+    ? `已连接 (${acct.account_masked || '未知账户'} · ${acct.account_type || conn.connection_mode})`
+    : 'TWS 未连接';
+  document.getElementById('kpi-cash').textContent = fmtUsd(cap.cash_base + cap.extra_contribution);
+  document.getElementById('kpi-cash-source').textContent =
+    cashSourceLabel(cap) + (cap.extra_contribution > 0 ? ` + 新增定投 ${fmtUsd(cap.extra_contribution, 0)}` : '');
+  document.getElementById('kpi-core-mv').textContent = fmtUsd(cap.core_positions_value);
+  document.getElementById('kpi-plan-equity').textContent = `计划总资产: ${fmtUsd(cap.plan_equity)}`;
+
+  const other = data.other_positions || { count: 0, total_market_value: 0, totals_by_currency: {}, items: [] };
+  document.getElementById('kpi-other-count').textContent = `${other.count} 项`;
+  const currencyTotals = Object.entries(other.totals_by_currency || {});
+  if (currencyTotals.length > 0) {
+    document.getElementById('kpi-other-mv').textContent = currencyTotals
+      .map(([cur, val]) => fmtCurrency(val, cur))
+      .join(' · ');
+  } else {
+    document.getElementById('kpi-other-mv').textContent = `市值 ${fmtUsd(other.total_market_value ?? 0)}`;
+  }
+
+  const otherCard = document.getElementById('other-positions-card');
+  if (other.count > 0) {
+    otherCard.style.display = '';
+    document.getElementById('tbody-other-positions').innerHTML = other.items.map(p => {
+      const cur = p.currency || 'USD';
+      const curLabel = p.exchange ? `${esc(cur)} (${esc(p.exchange)})` : esc(cur);
+      const desc = p.sec_type === 'OPT' ? `${esc(p.expiry)} ${p.right}${p.strike}` : '--';
+      return `<tr>
+        <td><strong>${esc(p.symbol)}</strong></td>
+        <td>${esc(p.sec_type)}</td>
+        <td><small>${curLabel}</small></td>
+        <td>${desc}</td>
+        <td class="text-end">${Number(p.position).toFixed(0)}</td>
+        <td class="text-end">${p.market_price > 0 ? fmtCurrency(p.market_price, cur) : '--'}</td>
+        <td class="text-end">${fmtCurrency(p.market_value, cur)}</td>
+        <td class="text-end ${(p.unrealized_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}">${fmtCurrency(p.unrealized_pnl, cur)}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    otherCard.style.display = 'none';
+  }
+
+  const planA = data.plans?.drift_rebalance;
+  if (planA) {
+    const metaA = statusBadgeMeta(planA.status);
+    const bA = document.getElementById('plan-a-badge');
+    bA.className = `badge ${metaA.cls}`;
+    bA.textContent = metaA.label;
+    document.getElementById('plan-a-drift').textContent =
+      `${Number(planA.max_drift_pct).toFixed(2)}% / ${Number(planA.drift_threshold_pct).toFixed(1)}%`;
+    const pct = Math.min(100, (planA.max_drift_pct / Math.max(0.1, planA.drift_threshold_pct)) * 100);
+    const bar = document.getElementById('plan-a-drift-bar');
+    bar.style.width = `${pct}%`;
+    bar.className = `progress-bar ${planA.max_drift_pct >= planA.drift_threshold_pct ? 'bg-warning' : 'bg-success'}`;
+    document.getElementById('plan-a-summary').textContent = planA.summary_text;
+  }
+
+  const planB = data.plans?.trend_200sma_bil;
+  if (planB) {
+    const metaB = statusBadgeMeta(planB.status);
+    const bB = document.getElementById('plan-b-badge');
+    bB.className = `badge ${metaB.cls}`;
+    bB.textContent = metaB.label;
+    document.getElementById('plan-b-summary').textContent = planB.summary_text;
+  }
+
+  renderRegimes(data.regimes || {});
+  renderSelectedPlan(data);
+
+  // Odd-lot panel
+  const odd = data.odd_lot_summary || {};
+  document.getElementById('oddlot-asof').textContent = odd.available
+    ? `截止扫描 ${odd.as_of_date || '--'}（已过期 ${odd.expired_count || 0}）`
+    : '暂无本地扫描缓存';
+  const activeOdd = odd.active_opportunities || [];
+  if (activeOdd.length === 0) {
+    document.getElementById('tbody-oddlot').innerHTML =
+      '<tr><td colspan="4" class="text-center text-muted py-3">当前无未过期零股要约活跃机会</td></tr>';
+  } else {
+    document.getElementById('tbody-oddlot').innerHTML = activeOdd.map(item => {
+      const priceText = item.min_offer_price === item.max_offer_price
+        ? fmtUsd(item.min_offer_price)
+        : `${fmtUsd(item.min_offer_price)} - ${fmtUsd(item.max_offer_price)}`;
+      const url = safeUrl(item.filing_url);
+      return `<tr>
+        <td><a href="${esc(url)}" target="_blank" rel="noopener noreferrer"><strong>${esc(item.symbol)}</strong></a><br><small class="text-muted">${esc(item.company_name)}</small></td>
+        <td><small>${esc(item.offer_type)}<br>${priceText}</small></td>
+        <td class="text-end small">${esc(item.expiration_date || '--')}</td>
+        <td class="text-end"><span class="badge bg-secondary">${esc(item.status)}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Benchmarks panel
+  const bench = data.benchmark_summary || {};
+  const list = [...(bench.index_strategies || []), ...(bench.dca_strategies || [])];
+  if (list.length === 0) {
+    document.getElementById('tbody-benchmarks').innerHTML =
+      '<tr><td colspan="6" class="text-center text-muted py-3">尚未生成指数研究缓存（运行 scripts/run_index_study.py 生成）</td></tr>';
+  } else {
+    document.getElementById('tbody-benchmarks').innerHTML = list.map(row => {
+      const cagr = row.xirr_pct != null ? `XIRR ${Number(row.xirr_pct).toFixed(2)}%` : `${Number(row.cagr_pct).toFixed(2)}%`;
+      const dd = row.twr_max_drawdown_pct != null ? row.twr_max_drawdown_pct : row.max_drawdown_pct;
+      return `<tr>
+        <td class="small"><strong>${esc(row.strategy_name)}</strong></td>
+        <td class="text-end small">${Number(row.total_return_pct).toFixed(2)}%</td>
+        <td class="text-end small">${esc(cagr)}</td>
+        <td class="text-end small text-danger">${Number(dd).toFixed(2)}%</td>
+        <td class="text-end small">${row.sharpe_ratio != null ? Number(row.sharpe_ratio).toFixed(3) : '--'}</td>
+        <td class="text-end small">${row.order_count ?? '--'}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
 async function loadTradingConfig() {
-  const res = await fetch('/api/trading/config');
-  const data = await res.json();
+  const data = await fetchAPI('/api/trading/config');
+  if (!data) return;
   document.getElementById('trading-mode').textContent = data.mode;
   document.getElementById('trading-config').textContent = JSON.stringify(data, null, 2);
 }
+
+async function loadIndexCore() {
+  const params = new URLSearchParams();
+  const extraDca = parseFloat(document.getElementById('input-extra-dca').value);
+  if (!isNaN(extraDca) && extraDca >= 0) params.set('extra_contribution', String(extraDca));
+
+  const driftPct = parseFloat(document.getElementById('input-drift-pct').value);
+  if (!isNaN(driftPct) && driftPct > 0 && driftPct < 50) {
+    params.set('drift_threshold_pct', String(driftPct / 100.0));
+  }
+
+  const overrideRaw = document.getElementById('input-override-cash').value.trim();
+  if (overrideRaw !== '') {
+    const ov = parseFloat(overrideRaw);
+    if (!isNaN(ov) && ov >= 0) params.set('override_cash', String(ov));
+  }
+
+  const data = await fetchAPI('/api/trading/index-core?' + params.toString());
+  if (data) renderReport(data);
+}
+
 loadTradingConfig();
+loadIndexCore();
 </script>
 {% endblock %}

@@ -52,7 +52,8 @@ class DataCache:
         self.orders: list[dict] = []
         self.executions: list[dict] = []
         self.completed_orders: list[dict] = []
-        self.market_data: dict[int, dict] = {}  # con_id -> greeks
+        self.market_data: dict[int, dict] = {}  # con_id -> greeks/quotes
+        self.portfolio_values: dict[int, dict] = {}  # con_id -> updatePortfolio
         self.pnl: dict = {}  # daily, unrealized, realized
         self.pnl_single: dict[int, dict] = {}  # con_id -> pnl data
         self.last_update: Optional[datetime] = None
@@ -64,13 +65,55 @@ class DataCache:
 
     def update_account_summary(self, items: list[dict]) -> None:
         with self._lock:
-            self.account_summary = items
+            merged: dict[tuple[str, str, str], dict] = {
+                (
+                    str(existing.get("account") or ""),
+                    str(existing.get("tag") or ""),
+                    str(existing.get("currency") or ""),
+                ): dict(existing)
+                for existing in self.account_summary
+            }
+            for item in items:
+                key = (
+                    str(item.get("account") or ""),
+                    str(item.get("tag") or ""),
+                    str(item.get("currency") or ""),
+                )
+                merged[key] = dict(item)
+            self.account_summary = list(merged.values())
             self.last_update = datetime.utcnow()
             self.data_freshness = "fresh"
 
     def update_positions(self, items: list[dict]) -> None:
+        def _pos_key(p: dict) -> tuple:
+            con_id = int(p.get("con_id") or 0)
+            acct = str(p.get("account") or "")
+            if con_id > 0:
+                return ("con", acct, con_id)
+            return (
+                "sym",
+                acct,
+                str(p.get("symbol") or ""),
+                str(p.get("sec_type") or ""),
+                str(p.get("expiry") or ""),
+                float(p.get("strike") or 0.0),
+                str(p.get("right") or ""),
+            )
+
         with self._lock:
-            self.positions = items
+            merged: dict[tuple, dict] = {
+                _pos_key(existing): dict(existing)
+                for existing in self.positions
+                if abs(float(existing.get("position") or 0)) > 1e-9
+            }
+            for item in items:
+                key = _pos_key(item)
+                qty = float(item.get("position") or 0)
+                if abs(qty) <= 1e-9:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = dict(item)
+            self.positions = list(merged.values())
             self.last_update = datetime.utcnow()
 
     def update_orders(self, items: list[dict]) -> None:
@@ -108,21 +151,75 @@ class DataCache:
             self.pnl_single = data
             self.last_update = datetime.utcnow()
 
+    def update_portfolio_values(self, values: dict[int, dict]) -> None:
+        with self._lock:
+            self.portfolio_values = {k: dict(v) for k, v in values.items()}
+            self.last_update = datetime.utcnow()
+
     def mark_stale(self) -> None:
         with self._lock:
             self.data_freshness = "stale"
 
+    @staticmethod
+    def _pick_market_price(pos: dict, md: dict) -> float:
+        for field in ("last", "close"):
+            val = md.get(field)
+            if val is not None and float(val) > 0:
+                return float(val)
+        bid = float(md.get("bid") or 0)
+        ask = float(md.get("ask") or 0)
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        if bid > 0:
+            return bid
+        if ask > 0:
+            return ask
+        if pos.get("sec_type", "") in ("STK", "ETF"):
+            und = float(md.get("und_price") or 0)
+            if und > 0:
+                return und
+        return 0.0
+
     def get_snapshot(self) -> dict:
         with self._lock:
+            positions = [dict(p) for p in self.positions]
+            market_data = {k: dict(v) for k, v in self.market_data.items()}
+            portfolio_values = {k: dict(v) for k, v in self.portfolio_values.items()}
+
+            for p in positions:
+                con_id = p.get("con_id", 0)
+                if con_id in portfolio_values:
+                    pv = portfolio_values[con_id]
+                    if (pv.get("market_price") or 0) > 0:
+                        p["market_price"] = float(pv["market_price"])
+                    p["market_value"] = float(pv.get("market_value", p.get("market_value", 0)) or 0)
+                    p["unrealized_pnl"] = float(pv.get("unrealized_pnl", p.get("unrealized_pnl", 0)) or 0)
+                    p["realized_pnl"] = float(pv.get("realized_pnl", p.get("realized_pnl", 0)) or 0)
+                    p["data_status"] = p.get("data_status") or "portfolio"
+
+                if (p.get("market_price") or 0) <= 0 and con_id in market_data:
+                    md = market_data[con_id]
+                    price = self._pick_market_price(p, md)
+                    if price > 0:
+                        qty = float(p.get("position", 0) or 0)
+                        mult = float(p.get("multiplier", 100) or 100) if p.get("sec_type") == "OPT" else 1.0
+                        avg_cost = float(p.get("avg_cost", 0) or 0)
+                        p["market_price"] = price
+                        p["market_value"] = qty * price * mult
+                        if avg_cost > 0:
+                            p["unrealized_pnl"] = (price - avg_cost) * qty * mult
+                        p["data_status"] = "delayed" if md.get("is_delayed") else "realtime"
+
             return {
-                "account_summary": list(self.account_summary),
-                "positions": list(self.positions),
-                "orders": list(self.orders),
-                "executions": list(self.executions),
-                "completed_orders": list(self.completed_orders),
-                "market_data": dict(self.market_data),
+                "account_summary": [dict(a) for a in self.account_summary],
+                "positions": positions,
+                "orders": [dict(o) for o in self.orders],
+                "executions": [dict(e) for e in self.executions],
+                "completed_orders": [dict(c) for c in self.completed_orders],
+                "market_data": market_data,
+                "portfolio_values": portfolio_values,
                 "pnl": dict(self.pnl),
-                "pnl_single": dict(self.pnl_single),
+                "pnl_single": {k: dict(v) if isinstance(v, dict) else v for k, v in self.pnl_single.items()},
                 "last_update": self.last_update,
                 "connected": self.connected,
                 "connection_mode": self.connection_mode,
@@ -181,6 +278,11 @@ class ConnectionManager:
         self._running = False
         if self._client:
             logger.info("正在断开 IBKR 连接...")
+            if getattr(self._client, "current_account", ""):
+                try:
+                    self._client.reqAccountUpdates(False, self._client.current_account)
+                except Exception:
+                    pass
             self._client.disconnect()
         self.cache.connected = False
         logger.info("IBKR 连接已断开")
@@ -346,10 +448,10 @@ class ConnectionManager:
         if not self._client:
             return
 
-        # 设置行情类型：优先实时，不可用时自动切换延迟行情
-        # 1=实时, 2=延迟, 3=冻结延迟
-        self._client.reqMarketDataType(2)  # 使用延迟行情（Paper 账户通常无实时权限）
-        logger.info("已设置行情类型: 延迟行情")
+        # 设置行情类型：4=冻结延迟（同时兼容实盘订阅与无实时权限账户的盘中/盘后估值）
+        # 1=实时, 2=冻结, 3=延迟, 4=冻结延迟
+        self._client.reqMarketDataType(4)
+        logger.info("已设置行情类型: 冻结延迟行情 (type=4)")
 
         self._client.account_summary_end.clear()
         self._client.reqAccountSummary(
@@ -365,9 +467,11 @@ class ConnectionManager:
         self._client.reqAllOpenOrders()
         logger.info("已请求挂单数据")
 
-        # 请求 PnL
+        # 请求 PnL 与只读持仓估值
         acct = self._client.current_account
         if acct:
+            self._client.reqAccountUpdates(True, acct)
+            logger.info("已订阅账户只读持仓估值 (reqAccountUpdates)")
             self._client.reqPnL(
                 RequestIdManager.RESERVED_PNL, acct, ""
             )
@@ -449,6 +553,11 @@ class ConnectionManager:
                 if mkt_items:
                     self.cache.update_market_data(mkt_items)
 
+                # 收集 updatePortfolio 持仓估值
+                portfolio_values = self._client.get_portfolio_values()
+                if portfolio_values:
+                    self.cache.update_portfolio_values(portfolio_values)
+
                 # 收集 PnL
                 pnl_data = self._client.get_pnl_data()
                 if pnl_data:
@@ -470,8 +579,8 @@ class ConnectionManager:
 
         from ibapi.contract import Contract
 
-        # 记录已订阅的标的，避免重复
-        subscribed_underlyings: set[str] = set()
+        # 记录已订阅的标的（含币种），避免重复
+        subscribed_underlyings: set[tuple[str, str]] = set()
 
         for pos in positions:
             con_id = pos.get("con_id", 0)
@@ -517,28 +626,31 @@ class ConnectionManager:
             # 订阅股票/ETF 行情（获取标的价格）
             elif sec_type in ("STK", "ETF"):
                 symbol = pos.get("symbol", "")
-                if symbol in subscribed_underlyings:
+                currency = (pos.get("currency") or "USD").strip().upper() or "USD"
+                sub_key = (symbol, currency)
+                if sub_key in subscribed_underlyings:
                     continue
-                subscribed_underlyings.add(symbol)
+                subscribed_underlyings.add(sub_key)
 
+                pos_exchange = (pos.get("exchange") or "").strip().upper()
                 contract = Contract()
                 contract.conId = con_id
                 contract.symbol = symbol
                 contract.secType = sec_type
-                contract.exchange = "SMART"
-                contract.currency = pos.get("currency", "USD")
+                contract.exchange = pos_exchange if (currency != "USD" and pos_exchange) else "SMART"
+                contract.currency = currency
                 if pos.get("primary_exchange"):
                     contract.primaryExchange = pos["primary_exchange"]
 
                 contract_info = {
                     "con_id": con_id, "symbol": symbol,
-                    "sec_type": sec_type,
+                    "sec_type": sec_type, "currency": currency,
                 }
                 ticker_id = self._client.allocate_ticker_id(contract_info)
                 self._option_tickers[ticker_id] = con_id
 
                 self._client.reqMktData(ticker_id, contract, "", False, False, [])
-                logger.info("订阅股票行情: %s conId=%d", symbol, con_id)
+                logger.info("订阅股票行情: %s (%s/%s) conId=%d", symbol, contract.exchange, currency, con_id)
 
     def get_connection_status(self) -> dict:
         """获取连接状态。"""

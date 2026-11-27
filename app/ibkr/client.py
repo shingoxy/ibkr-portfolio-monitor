@@ -99,6 +99,10 @@ class IBKRClient(EWrapper, EClient):
         self._ticker_counter = 1000
         self._ticker_lock = threading.Lock()
 
+        # 实时/延迟持仓估值（来自 updatePortfolio）
+        self._portfolio_lock = threading.Lock()
+        self._portfolio_values: dict[int, dict] = {}
+
         # 错误队列
         self.error_queue: queue.Queue = queue.Queue()
 
@@ -180,6 +184,13 @@ class IBKRClient(EWrapper, EClient):
             logger.info("行情提示: %s", errorString)
             return
 
+        # Read-Only API 模式下完成订单/交互查询返回的提示（非致命数据错误）
+        if errorCode == 321 and (
+            "只读" in errorString or "read-only" in errorString.lower()
+        ):
+            logger.info("TWS 只读模式提示 (code=321): %s", errorString)
+            return
+
         # 数据请求错误
         msg = translate_error(errorCode)
         logger.warning("IBKR 错误: reqId=%d code=%d msg=%s (%s)",
@@ -233,6 +244,36 @@ class IBKRClient(EWrapper, EClient):
     def positionEnd(self) -> None:
         logger.info("持仓传输完成")
         self.position_end.set()
+
+    def updatePortfolio(
+        self,
+        contract: Contract,
+        position: float,
+        marketPrice: float,
+        marketValue: float,
+        averageCost: float,
+        unrealizedPNL: float,
+        realizedPNL: float,
+        accountName: str,
+    ) -> None:
+        """接收持仓估值回调（来自 reqAccountUpdates 只读订阅）。"""
+        con_id = getattr(contract, "conId", 0) or 0
+        if con_id <= 0:
+            return
+        item = {
+            "con_id": con_id,
+            "symbol": getattr(contract, "symbol", "") or "",
+            "sec_type": getattr(contract, "secType", "") or "",
+            "position": position,
+            "market_price": marketPrice,
+            "market_value": marketValue,
+            "avg_cost": averageCost,
+            "unrealized_pnl": unrealizedPNL,
+            "realized_pnl": realizedPNL,
+            "account": accountName,
+        }
+        with self._portfolio_lock:
+            self._portfolio_values[con_id] = item
 
     # ── 订单回调 ──────────────────────────────────────────────────────
 
@@ -330,15 +371,18 @@ class IBKRClient(EWrapper, EClient):
             return
         live_map = {1: "bid", 2: "ask", 4: "last", 6: "high", 7: "low", 9: "close", 14: "open"}
         delayed_map = {66: "bid", 67: "ask", 68: "last", 72: "high", 73: "low", 75: "close", 76: "open"}
+        snapshot_item: dict[str, Any] | None = None
         with self._ticker_lock:
             info = self._ticker_contracts.get(tickerId)
             if not info:
                 return
+            updated_field: str | None = None
             if field in live_map and price > 0:
                 fname = live_map[field]
                 info[fname] = price
                 info["is_delayed"] = False
                 self._ticker_live_fields.setdefault(tickerId, set()).add(fname)
+                updated_field = fname
             elif field in delayed_map and price > 0:
                 fname = delayed_map[field]
                 live_fields = self._ticker_live_fields.get(tickerId, set())
@@ -346,6 +390,18 @@ class IBKRClient(EWrapper, EClient):
                     info[fname] = price
                     if not live_fields:
                         info["is_delayed"] = True
+                    updated_field = fname
+            if updated_field is not None and info.get("con_id", 0):
+                snapshot_item = {
+                    "ticker_id": tickerId,
+                    "con_id": info.get("con_id", 0),
+                    "symbol": info.get("symbol", ""),
+                    "sec_type": info.get("sec_type", ""),
+                    updated_field: price,
+                    "is_delayed": bool(info.get("is_delayed", False)),
+                }
+        if snapshot_item is not None:
+            self.market_data_queue.put(snapshot_item)
 
     def tickSize(self, tickerId: TickerId, field: int, size: int) -> None:
         with self._ticker_lock:
@@ -456,6 +512,10 @@ class IBKRClient(EWrapper, EClient):
     def get_pnl_single_data(self) -> dict:
         with self._pnl_lock:
             return dict(self._pnl_single_data)
+
+    def get_portfolio_values(self) -> dict[int, dict]:
+        with self._portfolio_lock:
+            return {k: dict(v) for k, v in self._portfolio_values.items()}
 
     def drain_account_summary(self) -> list[dict]:
         items = []

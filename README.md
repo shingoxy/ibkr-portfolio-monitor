@@ -71,6 +71,7 @@ powershell -File scripts/run.ps1
 | 持仓 | 股票/期权持仓表格，按标的/类型筛选，按盈亏/到期日等排序 |
 | 期权策略 | 自动识别组合（14种策略），收益图、情景分析（IV变化维度）、风险提示 |
 | 挂单 | 只读显示当前挂单、已完成订单、成交记录 |
+| 指数再平衡 (`/trading`) | 严格只读指数核心调仓顾问（`SPY 70% / QQQ 30%` 5% 偏离阈值再平衡 vs 200 日均线 `±2%` 切换 `BIL`）、手工参考限价单测算、零股要约活跃机会与 10 年回测对照（JSON API: `/api/trading/index-core`） |
 | 导出 | 脱敏 Markdown/JSON + 完整本地 JSON |
 
 ## 自动识别的期权组合
@@ -174,12 +175,12 @@ conda run -n mlx312 python scripts/scan_odd_lots.py --edgar --user-agent "IBKRMo
 
 ## 测试覆盖
 
-166 个测试覆盖（`conda run -n mlx312 python -m pytest tests/ -q`）：
+184 个测试覆盖（`conda run -n mlx312 python -m pytest tests/ -q`）：
 - 只读保护（AST 静态扫描禁止方法调用 + 配置/运行时校验）
-- 账户脱敏（完整账户号不会出现在日志/导出/Phase 0 报告中）
+- 账户脱敏（完整账户号不会出现在日志/导出/Phase 0 报告/`/trading` 接口中）
 - 组合识别（14种期权策略 + 边界情况：数量、到期日、乘数不匹配）
 - 收益计算与期权成本（per-share vs per-contract、multiplier、手续费）
-- 指数研究与定投回测（`BIL`/`SHY` 避险切换、滞回趋势过滤、漂移阈值再平衡、DCA TWR/MWR-XIRR、分年度/压力窗口/滚动胜率）
+- 指数研究与 `/trading` 只读再平衡顾问（`BIL`/`SHY` 避险切换、滞回趋势过滤、漂移阈值再平衡、定投低配买入、手工限价单测算、增量缓存合并、多币种持仓分离、`updatePortfolio` 估值与 `/api/trading/index-core` 脱敏路由）
 - No.2 Phase 0 与 Track 1-2 研究（TWS 前置诊断与 Track 3 门控、PEAD BMO/AMC 零未来函数与 T+1 `SettledCash`、零股要约解析与 Voluntary CA 费用测算）
 
 ## 项目结构
@@ -190,8 +191,8 @@ app/
 ├── config.py                   # Pydantic Settings
 ├── logging_config.py           # 日志 + 账户脱敏 + 只读守卫
 ├── ibkr/
-│   ├── client.py               # EWrapper + EClient（修正 ACCOUNT_TAGS）
-│   ├── connection_manager.py   # 指数退避重连 + DataCache
+│   ├── client.py               # EWrapper + EClient（修正 ACCOUNT_TAGS + updatePortfolio + 延迟估值）
+│   ├── connection_manager.py   # 指数退避重连 + 增量合并 DataCache
 │   ├── errors.py               # 错误码中文翻译
 │   ├── request_ids.py          # reqId 管理
 │   └── contracts.py            # 合约构建
@@ -203,12 +204,12 @@ app/
 │   ├── risk_service.py         # 风险评估
 │   ├── export_service.py       # 脱敏导出 + 完整本地导出
 │   └── snapshot_service.py     # 快照编排 + 自动清理
-├── trading/                    # 只读信号/风控/模拟单、指数回测、PEAD 回测与零股要约扫描
+├── trading/                    # 只读信号/风控/模拟单、指数回测、只读指数调仓顾问、PEAD 回测与零股要约扫描
 ├── repositories/               # SQLite 异步存储
-├── api/                        # 5 个路由模块（含筛选排序）
-├── templates/                  # 4 个 HTML 页面
+├── api/                        # 6 个路由模块（含筛选排序与 /trading 指数再平衡接口）
+├── templates/                  # 5 个 HTML 页面
 └── static/                     # CSS + JS
-tests/                          # 20 个测试文件，166 个测试
+tests/                          # 21 个测试文件，184 个测试
 scripts/                        # check_connection.py, check_no2_prerequisites.py, fetch_pead_events.py, run_backtest.py, run_index_study.py, run_pead_study.py, scan_odd_lots.py, run.ps1, install.ps1
 ```
 
